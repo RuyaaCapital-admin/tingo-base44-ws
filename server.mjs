@@ -1,24 +1,31 @@
 import { WebSocketServer, WebSocket } from "ws";
-import { createServer } from "http";
+import http from "http";
 
 const PORT = process.env.PORT || 8080;
 const TIINGO_FX_URL  = "wss://api.tiingo.com/fx";
 const TIINGO_IEX_URL = "wss://api.tiingo.com/iex";
-const TIINGO_API_KEY = process.env.TIINGO_API_KEY;
-const RELAY_SECRET   = process.env.RELAY_SECRET || "";
+const TIINGO_API_KEY = process.env.TIINGO_API_KEY;    // set in Railway
+const RELAY_SECRET   = process.env.RELAY_SECRET || ""; // set in Railway
 
-const server = createServer();
+// Healthcheck + root
+const server = http.createServer((req, res) => {
+  if (req.url === "/health") { res.writeHead(200); res.end("ok"); return; }
+  res.writeHead(200); res.end("tiingo-relay");
+});
+
 const wss = new WebSocketServer({ server, path: "/ws" });
 
 wss.on("connection", (client) => {
   let upstream;
 
+  // 1st frame must be {"__secret":"..."}
   client.once("message", (buf1) => {
     try {
       const { __secret } = JSON.parse(String(buf1));
       if (RELAY_SECRET && __secret !== RELAY_SECRET) { client.close(1008, "forbidden"); return; }
     } catch { client.close(1008, "bad auth"); return; }
 
+    // 2nd frame: {"kind":"fx"|"iex","tickers":[...],"thresholdLevel":5}
     client.once("message", (buf2) => {
       try {
         const init = JSON.parse(String(buf2));
@@ -41,7 +48,7 @@ wss.on("connection", (client) => {
 
         upstream.on("message", (data) => client.send(data));
         upstream.on("close", (code, reason) => client.close(code, reason));
-        upstream.on("error", (err) => { try { client.send(JSON.stringify({ relay:"UPSTREAM_ERR", err:String(err) })); } catch {} });
+        upstream.on("error", (err) => { try { client.send(JSON.stringify({ relay: "UPSTREAM_ERR", err: String(err) })); } catch {} });
 
         client.on("message", (m) => { try { upstream?.send(m); } catch {} });
         client.on("close",   () => { try { upstream?.close(); } catch {} });
